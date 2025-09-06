@@ -1,0 +1,71 @@
+import time
+from machine import Pin, I2C
+import dht
+import bmp180
+from mpu6050 import MPU6050
+
+# --- Configuração do DHT11 ---
+# Sensor conectado ao pino GPIO 14
+dht_sensor = dht.DHT11(Pin(14))
+
+# --- Configuração I2C para BMP180 e MPU6050 ---
+# Sensores compartilhando os pinos SDA (GPIO 23) e SCL (GPIO 22)
+i2c = I2C(1, scl=Pin(22), sda=Pin(23))
+
+# --- Configuração do BMP180 ---
+# Inicializa o objeto BMP180
+try:
+    bmp = bmp180.BMP180(i2c)
+    bmp.oversample_sett = 2
+    bmp.sealevel = 101325
+    print("BMP180: Conectado com sucesso.")
+except OSError as e:
+    print("Erro ao inicializar BMP180:", e)
+    bmp = None
+
+# --- Configuração do MPU6050 ---
+# Inicializa o objeto MPU6050
+try:
+    mpu = MPU6050(i2c)
+    print("MPU6050: Conectado com sucesso.")
+except OSError as e:
+    print("Erro ao inicializar MPU6050:", e)
+    mpu = None
+
+print("\n=== Iniciando a leitura dos sensores... ===")
+
+while True:
+    try:
+        print("---------------------------------------------------")
+        
+        # --- Leitura do DHT11 ---
+        dht_sensor.measure()
+        temp_dht = dht_sensor.temperature()
+        hum = dht_sensor.humidity()
+        print(f"📡 DHT11 -> Temp: {temp_dht}°C | Umidade: {hum}%")
+
+        # --- Leitura do BMP180 ---
+        if bmp:
+            temp_bmp = bmp.temperature
+            press = bmp.pressure
+            alt = bmp.altitude
+            print(f"📡 BMP180 -> Temp: {temp_bmp}°C | Pressão: {press} Pa | Alt: {alt}m")
+        else:
+            print("📡 BMP180 -> Não disponível.")
+
+        # --- Leitura do MPU6050 ---
+        if mpu:
+            values = mpu.get_values()
+            ax, ay, az = values['AcX'], values['AcY'], values['AcZ']
+            gx, gy, gz = values['GyX'], values['GyY'], values['GyZ']
+            print(f"📡 MPU6050 -> Aceleração: X={ax}, Y={ay}, Z={az} | Giroscópio: X={gx}, Y={gy}, Z={gz}")
+        else:
+            print("📡 MPU6050 -> Não disponível.")
+
+        # Aguarda 2 segundos antes da próxima leitura
+        time.sleep(2)
+
+    except Exception as e:
+        print(f"Erro na leitura dos sensores: {e}")
+        time.sleep(2)
+
