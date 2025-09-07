@@ -1,71 +1,246 @@
+# main.py - Teste integrado: DHT11 + BMP180 + MPU6050
+# Criado para ser tolerante a variações de driver (MicroPython)
+# Khauan - FATL-1
+
 import time
 from machine import Pin, I2C
 import dht
-import bmp180
-from mpu6050 import MPU6050
 
-# --- Configuração do DHT11 ---
-# Sensor conectado ao pino GPIO 14
-dht_sensor = dht.DHT11(Pin(14))
+# -------------------------
+# Configurações de hardware
+# -------------------------
+DHT_PIN = 14
+I2C_SCL = 22
+I2C_SDA = 23
+I2C_ID = 0
 
-# --- Configuração I2C para BMP180 e MPU6050 ---
-# Sensores compartilhando os pinos SDA (GPIO 23) e SCL (GPIO 22)
-i2c = I2C(1, scl=Pin(22), sda=Pin(23))
+# Inicializa sensores básicos
+dht_sensor = dht.DHT11(Pin(DHT_PIN))
 
-# --- Configuração do BMP180 ---
-# Inicializa o objeto BMP180
+# Inicializa I2C (ajuste pinos conforme sua placa)
 try:
-    bmp = bmp180.BMP180(i2c)
-    bmp.oversample_sett = 2
-    bmp.sealevel = 101325
-    print("BMP180: Conectado com sucesso.")
-except OSError as e:
-    print("Erro ao inicializar BMP180:", e)
+    i2c = I2C(I2C_ID, scl=Pin(I2C_SCL), sda=Pin(I2C_SDA))
+except Exception as e:
+    print("Erro ao criar I2C:", e)
+    raise
+
+print("I2C scan inicial:")
+try:
+    found = i2c.scan()
+    print("  Endereços I2C encontrados:", [hex(a) for a in found])
+except Exception as e:
+    print("  Erro no scan I2C:", e)
+    found = []
+
+# -------------------------
+# Tenta carregar o BMP180
+# -------------------------
+bmp = None
+try:
+    # tenta importar de duas formas diferentes
+    try:
+        from bmp180 import BMP180
+        bmp = BMP180(i2c)
+    except Exception:
+        import bmp180 as _bmpmod
+        bmp = _bmpmod.BMP180(i2c)
+    # ajusta parâmetros se existirem
+    try:
+        bmp.oversample_sett = 2
+    except Exception:
+        pass
+    try:
+        # alguns drivers usam 'sealevel', outros 'baseline'
+        if hasattr(bmp, "sealevel"):
+            bmp.sealevel = 101325
+        elif hasattr(bmp, "baseline"):
+            bmp.baseline = 101325
+    except Exception:
+        pass
+    print("BMP180: inicializado.")
+except ImportError:
+    print("BMP180: driver não encontrado (mpu/bmp driver faltando).")
+    bmp = None
+except Exception as e:
+    print("BMP180: erro na inicialização:", e)
     bmp = None
 
-# --- Configuração do MPU6050 ---
-# Inicializa o objeto MPU6050
+# -------------------------
+# Tenta carregar o MPU6050
+# -------------------------
+mpu = None
 try:
-    mpu = MPU6050(i2c)
-    print("MPU6050: Conectado com sucesso.")
-except OSError as e:
-    print("Erro ao inicializar MPU6050:", e)
+    from mpu6050 import MPU6050
+    # tenta várias formas de instanciar
+    try:
+        mpu = MPU6050(i2c)          # driver aceita I2C como argumento
+    except TypeError:
+        try:
+            mpu = MPU6050()        # driver sem args, pode usar I2C interno
+            # tentar setar i2c se estiver previsto
+            if hasattr(mpu, "set_i2c"):
+                try: mpu.set_i2c(i2c)
+                except: pass
+        except Exception:
+            raise
+    # wake up / config se disponível
+    try:
+        if hasattr(mpu, "wakeup"):
+            mpu.wakeup()
+    except Exception:
+        pass
+    print("MPU6050: inicializado.")
+except ImportError:
+    print("MPU6050: driver não encontrado.")
+    mpu = None
+except Exception as e:
+    print("MPU6050: erro na inicialização:", e)
     mpu = None
 
-print("\n=== Iniciando a leitura dos sensores... ===")
-
-while True:
+# -------------------------
+# Funções utilitárias
+# -------------------------
+def read_bmp(bmp_obj):
+    """Retorna (temp_C, pressure_Pa, altitude_m) ou (None, None, None)."""
+    if not bmp_obj:
+        return (None, None, None)
     try:
-        print("---------------------------------------------------")
-        
-        # --- Leitura do DHT11 ---
-        dht_sensor.measure()
-        temp_dht = dht_sensor.temperature()
-        hum = dht_sensor.humidity()
-        print(f"📡 DHT11 -> Temp: {temp_dht}°C | Umidade: {hum}%")
-
-        # --- Leitura do BMP180 ---
-        if bmp:
-            temp_bmp = bmp.temperature
-            press = bmp.pressure
-            alt = bmp.altitude
-            print(f"📡 BMP180 -> Temp: {temp_bmp}°C | Pressão: {press} Pa | Alt: {alt}m")
+        # suporte a property ou função
+        if hasattr(bmp_obj, "temperature"):
+            temp = bmp_obj.temperature() if callable(getattr(bmp_obj, "temperature")) else bmp_obj.temperature
+        elif hasattr(bmp_obj, "readTemperature"):
+            temp = bmp_obj.readTemperature()
         else:
-            print("📡 BMP180 -> Não disponível.")
+            temp = None
 
-        # --- Leitura do MPU6050 ---
-        if mpu:
-            values = mpu.get_values()
-            ax, ay, az = values['AcX'], values['AcY'], values['AcZ']
-            gx, gy, gz = values['GyX'], values['GyY'], values['GyZ']
-            print(f"📡 MPU6050 -> Aceleração: X={ax}, Y={ay}, Z={az} | Giroscópio: X={gx}, Y={gy}, Z={gz}")
+        if hasattr(bmp_obj, "pressure"):
+            press = bmp_obj.pressure() if callable(getattr(bmp_obj, "pressure")) else bmp_obj.pressure
+        elif hasattr(bmp_obj, "readPressure"):
+            press = bmp_obj.readPressure()
         else:
-            print("📡 MPU6050 -> Não disponível.")
+            press = None
 
-        # Aguarda 2 segundos antes da próxima leitura
-        time.sleep(2)
+        if hasattr(bmp_obj, "altitude"):
+            alt = bmp_obj.altitude() if callable(getattr(bmp_obj, "altitude")) else bmp_obj.altitude
+        else:
+            # tenta calcular se tiver pressão e baseline
+            try:
+                baseline = getattr(bmp_obj, "sealevel", getattr(bmp_obj, "baseline", None))
+                if press is not None and baseline is not None:
+                    alt = 44330.0 * (1.0 - (press / baseline) ** 0.1903)
+                else:
+                    alt = None
+            except Exception:
+                alt = None
+
+        return (temp, press, alt)
+    except Exception as e:
+        print("Erro lendo BMP:", e)
+        return (None, None, None)
+
+def read_mpu(mpu_obj):
+    """Retorna dicionário com acel/gyro/temp, ou None."""
+    if not mpu_obj:
+        return None
+    try:
+        # 1) driver com read_accel_data / read_gyro_data / read_temperature
+        if hasattr(mpu_obj, "read_accel_data"):
+            accel = mpu_obj.read_accel_data()
+            gyro = mpu_obj.read_gyro_data() if hasattr(mpu_obj, "read_gyro_data") else {}
+            temp = mpu_obj.read_temperature() if hasattr(mpu_obj, "read_temperature") else None
+            return {
+                "ax": accel.get("x") if isinstance(accel, dict) else None,
+                "ay": accel.get("y") if isinstance(accel, dict) else None,
+                "az": accel.get("z") if isinstance(accel, dict) else None,
+                "gx": gyro.get("x") if isinstance(gyro, dict) else None,
+                "gy": gyro.get("y") if isinstance(gyro, dict) else None,
+                "gz": gyro.get("z") if isinstance(gyro, dict) else None,
+                "temp": temp
+            }
+
+        # 2) driver com get_values() que retorna AcX,AcY,AcZ,GyX,...
+        if hasattr(mpu_obj, "get_values"):
+            vals = mpu_obj.get_values()
+            # tenta mapear nomes comuns
+            ax = vals.get("AcX") or vals.get("ax") or vals.get("x")
+            ay = vals.get("AcY") or vals.get("ay") or vals.get("y")
+            az = vals.get("AcZ") or vals.get("az") or vals.get("z")
+            gx = vals.get("GyX") or vals.get("gx") or vals.get("gx")
+            gy = vals.get("GyY") or vals.get("gy") or vals.get("gy")
+            gz = vals.get("GyZ") or vals.get("gz") or vals.get("gz")
+            temp = vals.get("Temp") or vals.get("tmp") or vals.get("temperature")
+            return {"ax": ax, "ay": ay, "az": az, "gx": gx, "gy": gy, "gz": gz, "temp": temp}
+
+        # 3) driver com read_raw / read_raw_accel (baixo nível)
+        if hasattr(mpu_obj, "read_raw"):
+            try:
+                ax = mpu_obj.read_raw(0x3B)
+                # se retornar valor único, fallback
+            except Exception:
+                ax = ay = az = None
+            return {"ax": ax, "ay": ay, "az": az, "gx": None, "gy": None, "gz": None, "temp": None}
+
+        # fallback: sem suporte
+        return None
 
     except Exception as e:
-        print(f"Erro na leitura dos sensores: {e}")
+        print("Erro lendo MPU:", e)
+        return None
+
+# -------------------------
+# Loop principal
+# -------------------------
+print("\n=== Iniciando leitura integrada (DHT11 + BMP180 + MPU6050) ===")
+while True:
+    try:
+        # DHT11
+        try:
+            dht_sensor.measure()
+            dht_temp = dht_sensor.temperature()
+            dht_hum = dht_sensor.humidity()
+        except Exception as e:
+            dht_temp = dht_hum = None
+            print("DHT11 erro:", e)
+
+        # BMP180
+        bmp_temp, bmp_press, bmp_alt = read_bmp(bmp)
+
+        # MPU6050
+        mpu_data = read_mpu(mpu)
+
+        # Impressão formatada
+        print("-----------------------------------------------------")
+        if dht_temp is not None:
+            print("DHT11 -> Temp: {:.2f} °C  Umid: {} %".format(dht_temp, dht_hum))
+        else:
+            print("DHT11 -> Não disponível")
+
+        if bmp_temp is not None or bmp_press is not None:
+            print("BMP180 -> Temp: {}   Press: {}   Alt: {}".format(
+                "{:.2f} °C".format(bmp_temp) if bmp_temp is not None else "N/A",
+                "{:.2f} Pa".format(bmp_press) if bmp_press is not None else "N/A",
+                "{:.2f} m".format(bmp_alt) if bmp_alt is not None else "N/A"
+            ))
+        else:
+            print("BMP180 -> Não disponível")
+
+        if mpu_data:
+            print("MPU6050 -> Acel X:{:.2f} Y:{:.2f} Z:{:.2f} | Gyro X:{} Y:{} Z:{} | Tmp: {}".format(
+                mpu_data["ax"] if mpu_data["ax"] is not None else 0.0,
+                mpu_data["ay"] if mpu_data["ay"] is not None else 0.0,
+                mpu_data["az"] if mpu_data["az"] is not None else 0.0,
+                mpu_data["gx"], mpu_data["gy"], mpu_data["gz"],
+                mpu_data["temp"]
+            ))
+        else:
+            print("MPU6050 -> Não disponível")
+
+        # aguarda
         time.sleep(2)
 
+    except KeyboardInterrupt:
+        print("Interrompido pelo usuário.")
+        break
+    except Exception as e:
+        print("Erro geral no loop:", e)
+        time.sleep(2)
